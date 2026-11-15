@@ -1,0 +1,181 @@
+name: fh
+# Builds Fabric n Horizon (fh/): a JLac-styled page over the Horizon launcher's instances, one
+# .exe that a player unzips from FH.zip and double-clicks. Windows x64 only — the only platform it
+# exists for — on a Windows runner, so the icon and the version resource in the .exe are the real
+# Windows ones, not a cross-build's guess.
+#
+# The version is fh/VERSION (v1.2 first, one tenth per update: v1.3 … v1.9, then v1.10) and the
+# release is tagged from it: fh-v1.2. A tag that is already published is left alone, so a push
+# that changes nothing a player would notice publishes nothing; bumping VERSION publishes. The
+# release is created with --latest=false, so it never takes the latest slot from a game release
+# (it holds it only where it is the sole release, as in a fork). A branch's run only builds: the
+# zip waits as the run's artifact.
+#
+#   gh workflow run fh --ref <branch>
+
+on:
+  push:
+    branches: [main, 'fh-*', 'fh/**']
+    paths:
+      # Everything the .exe is built from: this crate, and the launcher's library it drives.
+      - 'fh/**'
+      - 'launcher/**'
+      - 'crates/**'
+      - 'third_party/**'
+      - '.github/workflows/fh.yml'
+  pull_request:
+    # The first FH build lives in its own pull request, and a workflow that is not on the default
+    # branch yet cannot be dispatched: the pull request's runs are the build.
+    paths:
+      - 'fh/**'
+      - 'launcher/**'
+      - 'crates/**'
+      - 'third_party/**'
+      - '.github/workflows/fh.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fh-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Test runs never reach the telemetry server: no live-count ping, no uploads (docs/telemetry.md).
+  HORIZON_TELEMETRY_URL: "off"
+  # Readable in a comment, and complete: `tee` holds its last block in a buffer that a killed
+  # build never writes.
+  CARGO_TERM_COLOR: never
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: fh
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          clean: true
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable, 2026-11
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        if: runner.environment == 'github-hosted'
+        with:
+          workspaces: fh
+          shared-key: fh-windows
+      - name: The version this build is
+        run: echo "VERSION=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_ENV"
+      - name: Room on the drives
+        run: |
+          df -h
+          echo "free space in the workspace's drive, in MB: $(df -m . | tail -1 | awk '{print $4}')"
+
+      - name: Tests
+        run: |
+          if cargo test --release > cargo-test.log 2>&1; then
+            exit 0
+          fi
+          echo "::error::cargo test failed; cargo-test.log has $(wc -l < cargo-test.log) lines"
+          grep -E "^(error|thread|test .* \.\.\. FAILED)" -A8 cargo-test.log | head -n 80 > errors.txt || true
+          n=0
+          while IFS= read -r line; do
+            n=$((n + 1))
+            [ "$n" -gt 10 ] && break
+            echo "::error::$(printf '%s' "$line" | cut -c1-350)"
+          done < errors.txt
+          exit 1
+
+      - name: Build
+        env:
+          # The C runtime linked in: without it the .exe asks for VCRUNTIME140.dll, which only the
+          # Visual C++ redistributable installs — a computer that has never played Minecraft has
+          # no reason to have one.
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          if cargo build --release > cargo-build.log 2>&1; then
+            exit 0
+          fi
+          echo "::error::cargo build failed; cargo-build.log has $(wc -l < cargo-build.log) lines"
+          grep -E "^(error|warning)" -A8 cargo-build.log | head -n 80 > errors.txt || true
+          n=0
+          while IFS= read -r line; do
+            n=$((n + 1))
+            [ "$n" -gt 10 ] && break
+            echo "::error::$(printf '%s' "$line" | cut -c1-350)"
+          done < errors.txt
+          exit 1
+
+      - name: The version is the file's, and only the system's libraries are linked
+        run: |
+          set -euo pipefail
+          out=$(./target/release/FH.exe --version)
+          echo "$out"
+          [[ "$out" == "Fabric n Horizon v$VERSION" ]] || { echo "::error::expected Fabric n Horizon v$VERSION"; exit 1; }
+          python ../tools/check_pe_arch.py x64 ./target/release/FH.exe
+          python ../tools/check_imports.py ./target/release/FH.exe
+      - name: A double-click opens no console
+        # A GUI-subsystem image (2): the page is the only window.
+        run: |
+          set -euo pipefail
+          python -c "
+          import struct, sys
+          data = open(sys.argv[1], 'rb').read()
+          pe = struct.unpack_from('<I', data, 0x3C)[0]
+          optional = pe + 24
+          subsystem = struct.unpack_from('<H', data, optional + 68)[0]
+          print('subsystem', subsystem)
+          raise SystemExit(0 if subsystem == 2 else 1)
+          " target/release/FH.exe
+      - name: Package FH.zip
+        run: |
+          set -euo pipefail
+          rm -rf dist && mkdir -p dist/FH
+          cp target/release/FH.exe dist/FH/
+          sed "s/@VERSION@/$VERSION/" pack/README.txt > dist/FH/README.txt
+          cd dist
+          powershell -NoProfile -Command "Compress-Archive -Path 'FH/*' -DestinationPath 'FH.zip' -Force"
+          ls -l FH.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: FH-${{ env.VERSION }}
+          path: fh/dist/FH.zip
+          if-no-files-found: error
+      - name: What failed, as a comment the failure can be read from
+        # The runner's raw log is not reachable from every place a failure is read, and a commit
+        # comment is.
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          body=""
+          for f in cargo-test.log cargo-build.log; do
+            [ -f "$f" ] || continue
+            body+="### $f: $(wc -l < "$f") lines, $(du -h "$f" | cut -f1); the last 400"$'\n\n```\n'"$(tail -n 400 "$f")"$'\n```\n\n'
+          done
+          body+=$'### disk\n\n```\n'"$(df -h | tail -4)"$'\n```\n'
+          [ -n "$body" ] || body="No cargo log was written: a step before cargo failed."
+          printf '%s' "$body" > comment.md
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -F body=@comment.md > /dev/null
+
+      - name: Publish fh-v${{ env.VERSION }}
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="fh-v$VERSION"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "::notice::$tag is published already: nothing to do (bump fh/VERSION)"
+            exit 0
+          fi
+          gh release create "$tag" dist/FH.zip \
+            --title "Fabric n Horizon v$VERSION" \
+            --latest=false \
+            --notes "Your Horizon instances, one page. Unzip FH.zip and double-click FH.exe: your browser opens on a page that lists the Horizon instances this computer has, and Launch signs you in with Microsoft if it has to, gets the build and the game's files, and starts the game. Minecraft: Java Edition instances are listed with their button off — they are next. How it works and its versioning: [fh/README.md](https://github.com/${{ github.repository }}/blob/main/fh/README.md)."

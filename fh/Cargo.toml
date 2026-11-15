@@ -1,0 +1,61 @@
+[package]
+# Fabric n Horizon: JLac's window over Horizon's instances. The version here and fh/VERSION move
+# together (a test checks it): v1.2 first, then one tenth per update.
+name = "horizon-fh"
+version = "1.2.0"
+edition = "2021"
+license = "MIT"
+description = "Fabric n Horizon: a JLac-styled page that lists your Horizon instances and starts one."
+publish = false
+
+# A workspace of its own, so the launcher's workspace and its lock file are untouched: this crate
+# only builds the page and the server, and uses the launcher's own core (the instance list, the
+# sign-in, the installs, the preparation and the game's command) through `horizon-launcher`.
+[workspace]
+
+[[bin]]
+name = "FH"
+path = "src/main.rs"
+
+[dependencies]
+# `xbox-sign-in`: Microsoft's own Xbox Live client, so the sign-in needs no Azure app of anyone's
+# making (launcher/Cargo.toml's note; account::XBOX_CLIENT_ID).
+horizon-launcher = { path = "../launcher", features = ["xbox-sign-in"] }
+
+[target.'cfg(windows)'.build-dependencies]
+# The icon and version in the .exe (build.rs).
+winresource = "0.1"
+
+# The same fixes the launcher's workspace applies (launcher/Cargo.toml): this binary links the
+# launcher's code, so wgpu-hal, naga and libmimalloc-sys must be the same copies — Intel's Windows
+# drivers crash on the released wgpu-hal's descriptor pool, shader packs need naga's GLSL fixes,
+# and the released libmimalloc-sys dies before main on CPUs without POPCNT.
+[patch.crates-io]
+wgpu-hal = { path = "../third_party/wgpu-hal" }
+naga = { path = "../third_party/naga" }
+libmimalloc-sys = { path = "../third_party/libmimalloc-sys" }
+
+# Line tables keep file:line in backtraces; as in the launcher's workspace.
+[profile.dev]
+debug = "line-tables-only"
+
+# A small, fast executable: the shapes are the launcher's own (launcher/Cargo.toml).
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+
+# The native mod API's generator parses the game's sources on every build; unoptimized it costs
+# seconds of each one (launcher/Cargo.toml has the same entries).
+[profile.dev.package.horizon-mod-api-gen]
+opt-level = 3
+[profile.dev.package.syn]
+opt-level = 3
+[profile.dev.package.proc-macro2]
+opt-level = 3
+[profile.release.package.horizon-mod-api-gen]
+opt-level = 3
+[profile.release.package.syn]
+opt-level = 3
+[profile.release.package.proc-macro2]
+opt-level = 3

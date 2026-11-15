@@ -68,6 +68,16 @@
   versions go</a>.</sub>
 </p>
 
+<h2 align="center">Fabric n Horizon</h2>
+
+<p align="center">
+  <b>Your Horizon instances, one page: unzip FH.zip, double-click the .exe, press Launch.</b><br>
+  <a href="https://github.com/bufferclick/NoLauncherHorizon/releases"><b>Download FH.zip</b></a><br>
+  <sub>This fork's page over the launcher's own instances, drawn the way JLac draws, Buffer's
+  Prism Launcher fork. Minecraft: Java Edition instances are listed with their button off.
+  <a href="fh/README.md">How it works, and how its versions go</a>.</sub>
+</p>
+
 <h2 align="center">Made by the Horizon Team</h2>
 
 <table align="center">
